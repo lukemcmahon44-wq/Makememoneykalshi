@@ -63,6 +63,18 @@ def alert_low_balance(balance: float) -> None:
     logger.warning("Low balance alert sent: $%.2f", balance)
 
 
+def alert_btc_entry(ticker: str, side: str, price_cents: int, contracts: int,
+                    cost_dollars: float, win_dollars: float, minutes_left: float) -> None:
+    msg = (
+        f"<b>BTC TRADE</b>: {ticker}\n"
+        f"Side: {side.upper()} @ {price_cents}¢ × {contracts} contracts\n"
+        f"Cost: ${cost_dollars:.2f} | Max win: +${win_dollars:.2f} | "
+        f"Expires in ~{minutes_left:.0f} min"
+    )
+    _send(msg)
+    logger.info("BTC entry alert: %s %s @ %d¢ × %d", ticker, side, price_cents, contracts)
+
+
 def alert_error(context: str, error: str) -> None:
     """Generic error ping — used sparingly for critical failures."""
     msg = f"<b>BOT ERROR</b> [{context}]\n<code>{error[:500]}</code>"

@@ -21,7 +21,7 @@ def get_connection() -> sqlite3.Connection:
 
 
 def init_db() -> None:
-    """Create tables if they don't exist."""
+    """Create tables if they don't exist, and migrate existing tables."""
     with get_connection() as conn:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS trades (
@@ -36,6 +36,7 @@ def init_db() -> None:
                 exit_price      REAL,
                 contracts       INTEGER NOT NULL DEFAULT 1,
                 order_id        TEXT,
+                side            TEXT    NOT NULL DEFAULT 'yes',
                 status          TEXT    NOT NULL DEFAULT 'open',
                 exit_reason     TEXT,
                 pnl_cents       REAL,
@@ -53,9 +54,19 @@ def init_db() -> None:
                 edge_score      REAL    NOT NULL,
                 contracts       INTEGER NOT NULL DEFAULT 1,
                 order_id        TEXT,
+                side            TEXT    NOT NULL DEFAULT 'yes',
                 opened_at       TEXT    NOT NULL
             );
         """)
+
+        # Migrate existing tables that predate the `side` column
+        for table in ("trades", "positions"):
+            try:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN side TEXT NOT NULL DEFAULT 'yes'")
+                logger.info("Migrated %s: added 'side' column", table)
+            except Exception:
+                pass  # column already exists
+
     logger.info("Database initialised at %s", DB_PATH)
 
 
@@ -63,25 +74,26 @@ def init_db() -> None:
 
 def open_position(ticker: str, question: str, provider: str,
                   entry_price: float, my_probability: float,
-                  edge_score: float, contracts: int, order_id: str) -> None:
+                  edge_score: float, contracts: int, order_id: str,
+                  side: str = "yes") -> None:
     now = datetime.utcnow().isoformat()
     with get_connection() as conn:
         conn.execute("""
             INSERT INTO positions
                 (ticker, question, provider, entry_price, my_probability,
-                 edge_score, contracts, order_id, opened_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 edge_score, contracts, order_id, side, opened_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (ticker, question, provider, entry_price, my_probability,
-              edge_score, contracts, order_id, now))
+              edge_score, contracts, order_id, side, now))
 
         conn.execute("""
             INSERT INTO trades
                 (ticker, question, provider, my_probability, kalshi_price,
-                 edge_score, entry_price, contracts, order_id, status, opened_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)
+                 edge_score, entry_price, contracts, order_id, side, status, opened_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)
         """, (ticker, question, provider, my_probability, entry_price,
-              edge_score, entry_price, contracts, order_id, now))
-    logger.debug("Opened position: %s", ticker)
+              edge_score, entry_price, contracts, order_id, side, now))
+    logger.debug("Opened position: %s | side=%s", ticker, side)
 
 
 def close_position(ticker: str, exit_price: float, exit_reason: str) -> Optional[float]:

@@ -21,6 +21,7 @@ load_dotenv()
 
 import db
 import bot
+import btc_bot
 from db import get_pnl_summary
 
 
@@ -110,23 +111,42 @@ def main() -> None:
 
     print_pnl_banner()
 
-    logger.info(
-        "Config — EDGE_THRESHOLD=%.1f%% | MAX_POSITIONS=%d | MAX_SIZE=$%.2f | "
-        "HALT_BELOW=$%.2f | SCAN=%ds",
-        float(os.getenv("EDGE_THRESHOLD", "8")),
-        int(os.getenv("MAX_OPEN_POSITIONS", "5")),
-        float(os.getenv("MAX_POSITION_SIZE", "2")),
-        float(os.getenv("MIN_BALANCE_HALT", "5")),
-        int(os.getenv("SCAN_INTERVAL", "60")),
-    )
+    bot_mode = os.getenv("BOT_MODE", "edge").lower()
 
-    try:
-        bot.run_loop()
-    except KeyboardInterrupt:
-        logger.info("Bot stopped by user (KeyboardInterrupt)")
-    except Exception:
-        logger.critical("Fatal error in bot loop:\n%s", traceback.format_exc())
-        sys.exit(1)
+    if bot_mode == "btc":
+        logger.info(
+            "Mode: BTC Hourly (Cowshed Robot) | series=%s | threshold=%s–%s¢ | "
+            "size=$%s | scan=%ss",
+            os.getenv("BTC_SERIES_TICKER", "KXBTCU"),
+            os.getenv("BTC_BUY_MIN", "95"),
+            os.getenv("BTC_BUY_MAX", "99"),
+            os.getenv("BTC_TRADE_SIZE", "10"),
+            os.getenv("SCAN_INTERVAL", "300"),
+        )
+        try:
+            btc_bot.run_loop()
+        except KeyboardInterrupt:
+            logger.info("BTC bot stopped by user (KeyboardInterrupt)")
+        except Exception:
+            logger.critical("Fatal error in BTC bot:\n%s", traceback.format_exc())
+            sys.exit(1)
+    else:
+        logger.info(
+            "Mode: Edge Bot | EDGE_THRESHOLD=%.1f%% | MAX_POSITIONS=%d | "
+            "MAX_SIZE=$%.2f | HALT_BELOW=$%.2f | SCAN=%ds",
+            float(os.getenv("EDGE_THRESHOLD", "8")),
+            int(os.getenv("MAX_OPEN_POSITIONS", "5")),
+            float(os.getenv("MAX_POSITION_SIZE", "2")),
+            float(os.getenv("MIN_BALANCE_HALT", "5")),
+            int(os.getenv("SCAN_INTERVAL", "60")),
+        )
+        try:
+            bot.run_loop()
+        except KeyboardInterrupt:
+            logger.info("Bot stopped by user (KeyboardInterrupt)")
+        except Exception:
+            logger.critical("Fatal error in bot loop:\n%s", traceback.format_exc())
+            sys.exit(1)
 
 
 if __name__ == "__main__":

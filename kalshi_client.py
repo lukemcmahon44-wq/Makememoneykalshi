@@ -93,6 +93,35 @@ def get_markets(status: str = "open", limit: int = 200, cursor: str = "") -> lis
     return markets
 
 
+def get_btc_markets(series_ticker: str) -> list:
+    """
+    Fetch open markets for a BTC hourly series (e.g. 'KXBTCU').
+    Tries the series_ticker query param first; falls back to prefix-filtering
+    the full market list if the API doesn't return results that way.
+    """
+    data = _request("GET", "/markets", params={
+        "status": "open",
+        "series_ticker": series_ticker,
+        "limit": 200,
+    })
+    if data:
+        markets = data.get("markets", [])
+        if markets:
+            logger.debug("Fetched %d BTC markets via series_ticker=%s", len(markets), series_ticker)
+            return markets
+
+    # Fallback: filter full market list by ticker prefix
+    all_markets = get_markets(status="open")
+    prefix = series_ticker.upper()
+    filtered = [
+        m for m in all_markets
+        if (m.get("ticker") or "").upper().startswith(prefix)
+        or (m.get("series_ticker") or "").upper() == prefix
+    ]
+    logger.debug("Fetched %d BTC markets via prefix filter (series=%s)", len(filtered), series_ticker)
+    return filtered
+
+
 def get_market(ticker: str) -> Optional[dict]:
     """Fetch a single market by ticker."""
     data = _request("GET", f"/markets/{ticker}")
