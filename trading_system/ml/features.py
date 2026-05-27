@@ -184,13 +184,16 @@ def compute_technical_features(df: pd.DataFrame) -> pd.DataFrame:
 def compute_calendar_features(df: pd.DataFrame) -> pd.DataFrame:
     idx = pd.to_datetime(df.index, utc=True, errors="coerce")
     out = pd.DataFrame(index=df.index)
-    out["hour_sin"] = np.sin(2 * np.pi * idx.hour / 24)
-    out["hour_cos"] = np.cos(2 * np.pi * idx.hour / 24)
-    out["dow_sin"] = np.sin(2 * np.pi * idx.dayofweek / 7)
-    out["dow_cos"] = np.cos(2 * np.pi * idx.dayofweek / 7)
-    minutes_in_session = idx.hour * 60 + idx.minute
+    hour = pd.Series(idx.hour, index=df.index)
+    dow = pd.Series(idx.dayofweek, index=df.index)
+    minute = pd.Series(idx.minute, index=df.index)
+    out["hour_sin"] = np.sin(2 * np.pi * hour / 24)
+    out["hour_cos"] = np.cos(2 * np.pi * hour / 24)
+    out["dow_sin"] = np.sin(2 * np.pi * dow / 7)
+    out["dow_cos"] = np.cos(2 * np.pi * dow / 7)
+    minutes_in_session = hour * 60 + minute
     out["minutes_to_close_norm"] = ((16 * 60) - minutes_in_session).clip(0, 390) / 390
-    out["days_to_options_expiry"] = 0   # placeholder
+    out["days_to_options_expiry"] = 0
     out["is_fomc_day"] = 0
     out["is_earnings_week"] = 0
     return out

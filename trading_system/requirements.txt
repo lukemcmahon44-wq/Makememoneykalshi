@@ -1,0 +1,42 @@
+# Broker & execution
+alpaca-py==0.26.0
+websockets==12.0
+aiohttp==3.9.5
+
+# Data
+yfinance==0.2.54
+fredapi==0.5.1
+praw==7.7.1
+requests==2.32.3
+nltk==3.8.1
+
+# Math & signals
+numpy==1.26.4
+pandas==2.2.2
+scipy==1.13.0
+statsmodels==0.14.2
+arch==6.3.0
+hmmlearn==0.3.2
+
+# ML
+lightgbm==4.3.0
+torch==2.3.0
+pytorch-forecasting==1.0.0
+lightning==2.3.0
+scikit-learn==1.5.0
+optuna==3.6.1
+transformers==4.41.2
+boruta==0.3
+
+# Risk & portfolio
+cvxpy==1.5.2
+
+# System
+python-dotenv==1.0.1
+loguru==0.7.2
+SQLAlchemy==2.0.30
+httpx==0.27.0
+
+# Test
+pytest==8.2.2
+pytest-asyncio==0.23.7

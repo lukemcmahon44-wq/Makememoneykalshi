@@ -1,0 +1,18 @@
+services:
+  trading_system:
+    build:
+      context: ..
+      dockerfile: trading_system/Dockerfile
+    container_name: trading_system
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/trading_system/data
+      - ./models:/app/trading_system/models
+      - ./logs:/app/trading_system/logs
+    healthcheck:
+      test: ["CMD", "test", "-f", "/app/trading_system/logs/trading.log"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
