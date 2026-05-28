@@ -1,0 +1,25 @@
+# Secrets — NEVER commit these
+.env
+*.pem
+*.key
+*_private_key*
+kalshi_key*
+
+# Persistent state / fill log
+*.db
+*.db-shm
+*.db-wal
+sniper_state.db
+
+# Logs
+logs/
+*.log
+*.log.*
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
