@@ -273,12 +273,17 @@ class KalshiClient:
             params={"status": "resting"},
         )
 
-    def get_settlements(self, limit: int = 200) -> list[dict]:
-        """All settlements (paginated). Used for P&L reconciliation."""
+    def get_settlements(self, min_ts: Optional[int] = None, limit: int = 200) -> list[dict]:
+        """Settlements (paginated). Pass `min_ts` (Unix seconds) to bound the
+        query — e.g. start of today — so we don't refetch the whole settlement
+        history every cycle."""
+        params: dict = {"limit": limit}
+        if min_ts is not None:
+            params["min_ts"] = int(min_ts)
         return self._paginate(
             "/portfolio/settlements",
             item_key="settlements",
-            params={"limit": limit},
+            params=params,
         )
 
     # ── Market data ───────────────────────────────────────────────────────────

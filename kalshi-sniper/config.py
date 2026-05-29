@@ -61,8 +61,12 @@ CANCEL_ON_EXIT: bool = os.getenv("CANCEL_ON_EXIT", "").strip().lower() in (
 # ──────────────────────────────────────────────────────────────────────────────
 # Endpoints (verified against docs.kalshi.com, 2026)
 # ──────────────────────────────────────────────────────────────────────────────
-KALSHI_HOST_PROD = "https://api.elections.kalshi.com"
-KALSHI_HOST_DEMO = "https://demo-api.kalshi.co"
+# Recommended "external-api" hosts for Trade API traders (docs.kalshi.com).
+# The legacy/shared hosts (still supported) are, for prod
+# https://api.elections.kalshi.com and for demo https://demo-api.kalshi.co —
+# set KALSHI_HOST to one of those if you ever need to fall back.
+KALSHI_HOST_PROD = "https://external-api.kalshi.com"
+KALSHI_HOST_DEMO = "https://external-api.demo.kalshi.co"
 
 # Path prefix that is part of EVERY request path AND part of the RSA-PSS signing
 # string. The signature is computed over `timestamp + METHOD + path`, where path

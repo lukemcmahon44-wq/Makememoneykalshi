@@ -18,6 +18,7 @@ import signal
 import sys
 import time
 import uuid
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Optional
 
@@ -55,7 +56,8 @@ def setup_logging() -> None:
 
 def print_banner() -> None:
     mode = "DRY-RUN (no orders placed)" if config.DRY_RUN else "*** LIVE TRADING ***"
-    env = "DEMO" if config.USE_DEMO else "*** PRODUCTION ***"
+    is_demo_host = "demo" in config.HOST.lower()
+    env = "DEMO" if is_demo_host else "*** PRODUCTION ***"
     bar = "=" * 64
     lines = [
         bar,
@@ -73,7 +75,7 @@ def print_banner() -> None:
         f"  Scan interval   : {config.SCAN_INTERVAL_SECONDS}s",
         bar,
     ]
-    log = logger.warning if (not config.DRY_RUN or not config.USE_DEMO) else logger.info
+    log = logger.warning if (not config.DRY_RUN or not is_demo_host) else logger.info
     for line in lines:
         log(line)
 
@@ -142,29 +144,40 @@ class Trader:
         self._stop = True
 
     def _refresh_settlements_and_pnl(self) -> Decimal:
-        """Pull settlements, persist them, and return today's realized P&L."""
+        """Pull TODAY's settlements, persist them, and return today's realized P&L.
+
+        Bounded with min_ts = start of today (UTC) so we don't refetch the whole
+        settlement history every cycle."""
         try:
-            settlements = self.client.get_settlements()
+            start_of_today = datetime.now(timezone.utc).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+            settlements = self.client.get_settlements(min_ts=int(start_of_today.timestamp()))
             self.store.record_settlements(settlements)
         except KalshiAPIError as exc:
             logger.error("Could not refresh settlements: %s", exc)
         return self.store.realized_pnl_today()
 
     def run_cycle(self) -> None:
-        # 0. Realized-P&L / daily-loss guard.
+        # 0. Realized-P&L / daily-loss guard (settlements refreshed first).
         pnl_today = self._refresh_settlements_and_pnl()
         if pnl_today <= -config.DAILY_LOSS_LIMIT:
             self._loss_halted = True
+
+        # 1. Fresh balance — never sized from a cached value.
+        balance = self.client.get_balance()
+
+        # Once the daily loss limit is hit, stop buying for the rest of the run.
         if self._loss_halted:
             logger.warning(
                 "DAILY LOSS LIMIT HIT (realized P&L today=$%s, limit=$%s). "
                 "NEW BUYING HALTED until manual restart.",
-                pnl_today,
+                f"{pnl_today:.2f}",
                 config.DAILY_LOSS_LIMIT,
             )
+            self._status_line(balance, Decimal(0), 0, 0, 0)
+            return
 
-        # 1. Fresh balance — never sized from a cached value.
-        balance = self.client.get_balance()
         if balance < config.MIN_BALANCE:
             logger.warning(
                 "Balance $%s below floor $%s — skipping new trades this cycle.",
@@ -180,10 +193,6 @@ class Trader:
         held = touched_tickers(positions, resting)
         deployed = deployed_capital(positions, resting)
         cap = config.MAX_DEPLOYED_PCT * balance
-
-        if self._loss_halted:
-            self._status_line(balance, deployed, len(positions), 0, 0)
-            return
 
         # 3. Deployed-capital gate.
         if deployed >= cap:
@@ -203,14 +212,24 @@ class Trader:
         # 5. Pure selection + sizing.
         candidates = strategy.select_and_size(markets, balance, held)
 
-        # 6. Re-verify balance immediately before placing (cycle may have taken
-        #    a while), then place order-by-order respecting the running cap.
+        # 6. Re-verify balance immediately before placing (the cycle may have
+        #    taken a while), then place order-by-order respecting the running cap.
         balance = self.client.get_balance()
+        if balance < config.MIN_BALANCE:
+            logger.warning(
+                "Balance $%s dropped below floor $%s before placement — skipping.",
+                f"{balance:.2f}",
+                config.MIN_BALANCE,
+            )
+            self._status_line(balance, deployed, len(positions), len(candidates), 0)
+            return
         cap = config.MAX_DEPLOYED_PCT * balance
         placed = 0
         for order in candidates:
             if order.ticker in held:  # belt-and-suspenders against double-fire
                 continue
+            # Pre-check against the INTENDED notional so we never place an order
+            # that would breach the cap.
             if deployed + order.dollar_amount > cap:
                 logger.info(
                     "Deployed cap reached ($%s + $%s > $%s) — stopping placement this cycle.",
@@ -219,15 +238,24 @@ class Trader:
                     f"{cap:.2f}",
                 )
                 break
-            if self._place(order):
+            # Advance the running total by what ACTUALLY filled: a killed
+            # fill-or-kill order deploys nothing and leaves the ticker to retry.
+            filled = self._place(order)
+            if filled > 0:
                 placed += 1
-                deployed += order.dollar_amount
+                deployed += filled
                 held.add(order.ticker)
 
         self._status_line(balance, deployed, len(positions), len(candidates), placed)
 
-    def _place(self, order: strategy.IntendedOrder) -> bool:
-        """Place one order (or log it in dry-run). Returns True if counted as placed."""
+    def _place(self, order: strategy.IntendedOrder) -> Decimal:
+        """Place one order (or simulate it in dry-run).
+
+        Returns the dollar notional actually deployed: the full amount in
+        dry-run; the *filled* amount in live mode; or Decimal(0) if nothing
+        filled or the call failed. The caller advances the running deployed-
+        capital total by this, so a killed fill-or-kill order deploys nothing.
+        """
         client_order_id = str(uuid.uuid4())
 
         if config.DRY_RUN:
@@ -249,7 +277,7 @@ class Trader:
                 result=None,
                 dry_run=True,
             )
-            return True
+            return order.dollar_amount
 
         try:
             result = self.client.place_order(
@@ -273,20 +301,31 @@ class Trader:
                 result={"error": str(exc)},
                 dry_run=False,
             )
-            return False
+            return Decimal(0)
 
-        status = result.get("status", "?")
-        filled = result.get("fill_count_fp") or result.get("fill_count") or "0"
+        # How much actually filled? Fill-or-kill is all-or-nothing, but we read
+        # the reported fill count to be exact. If it's absent we conservatively
+        # assume the order deployed — overstating the running total is safe for
+        # the cap, whereas understating it could let us over-deploy.
+        fill = to_decimal(result.get("fill_count_fp"))
+        if fill is None:
+            fill = to_decimal(result.get("fill_count"))
+        if fill is None:
+            filled_notional = order.dollar_amount
+            fill_str = "unknown"
+        else:
+            filled_notional = fill * order.price
+            fill_str = str(fill)
         logger.info(
-            "ORDER %s %s @ %s = $%s | client_id=%s | order_id=%s | status=%s | filled=%s",
+            "ORDER %s %s @ %s | client_id=%s | order_id=%s | status=%s | filled=%s | deployed=$%s",
             order.ticker,
             order.count_fp,
             order.yes_price_dollars,
-            f"{order.dollar_amount:.2f}",
             client_order_id,
             result.get("order_id", "?"),
-            status,
-            filled,
+            result.get("status", "?"),
+            fill_str,
+            f"{filled_notional:.2f}",
         )
         self.store.log_order(
             ticker=order.ticker,
@@ -299,7 +338,7 @@ class Trader:
             result=result,
             dry_run=False,
         )
-        return True
+        return filled_notional
 
     def _backfill_missing_asks(self, markets: list[dict], held: set[str]) -> None:
         """Optionally derive yes_ask_dollars from the order book for markets that

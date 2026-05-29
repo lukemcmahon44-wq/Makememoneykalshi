@@ -50,6 +50,7 @@ kalshi-sniper/
 ├── trader.py          # Main loop: scan -> size -> execute -> log
 ├── state.py           # SQLite fill log + settlement P&L tracking
 ├── test_strategy.py   # Unit tests for sizing + selection
+├── test_trader.py     # Unit tests for the loop's guard rails
 ├── requirements.txt
 ├── .env.example
 └── README.md
@@ -98,8 +99,8 @@ Both flags default **ON** (the safe direction). Set them in `.env`:
 |----------------------------|------------------|---------------------------------------------------|
 | Stay safe (default)        | `DRY_RUN=true`   | Logs intended trades, places nothing.             |
 | Place real orders          | `DRY_RUN=false`  | **Submits live orders.**                          |
-| Use the sandbox (default)  | `USE_DEMO=true`  | Talks to `demo-api.kalshi.co`.                    |
-| Use production             | `USE_DEMO=false` | Talks to `api.elections.kalshi.com`.              |
+| Use the sandbox (default)  | `USE_DEMO=true`  | Talks to `external-api.demo.kalshi.co`.           |
+| Use production             | `USE_DEMO=false` | Talks to `external-api.kalshi.com`.               |
 
 Recommended progression:
 
@@ -147,9 +148,12 @@ cd kalshi-sniper
 python -m pytest -v
 ```
 
-The suite covers the price-band edges (0.94/0.95/0.99/1.00), sizing + round-down,
-dedup, time-to-close, liquidity, fractional handling, ordering, and asserts no
-`float` ever appears in the order strings.
+`test_strategy.py` covers the price-band edges (0.94/0.95/0.99/1.00), sizing +
+round-down, dedup, time-to-close, liquidity, fractional handling, ordering, and
+asserts no `float` ever appears in the order strings. `test_trader.py` covers the
+loop's guard rails: the order-by-order deployed-capital cap, in-cycle dedup, the
+balance floor and daily-loss halt, and correct deployed-capital accounting when a
+fill-or-kill order is *killed* vs. *filled*.
 
 ## Reconciliation (do this before going live)
 
@@ -179,4 +183,7 @@ control signing). Auth is RSA-PSS: three headers (`KALSHI-ACCESS-KEY`,
 path` (no query string) with salt length = digest length. Prices are 4-decimal
 dollar strings (`yes_price_dollars`), sizes are fixed-point strings (`count_fp`),
 and the YES ask is read from `yes_ask_dollars` (or derived as `1 − best_no_bid`
-from the bids-only order book). All money is handled with `Decimal`.
+from the bids-only order book). All money is handled with `Decimal`. Default
+hosts are the docs-recommended `external-api.kalshi.com` (prod) /
+`external-api.demo.kalshi.co` (demo); the legacy `api.elections.kalshi.com` /
+`demo-api.kalshi.co` hosts also work and can be selected via `KALSHI_HOST`.

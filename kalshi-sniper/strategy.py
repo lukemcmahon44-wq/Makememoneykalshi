@@ -89,15 +89,15 @@ def _round_down_to_increment(value: Decimal, increment: Decimal) -> Decimal:
 
 
 def parse_yes_ask(market: dict) -> Optional[Decimal]:
-    """The YES ask in dollars. Prefers `yes_ask_dollars`; falls back to a legacy
-    integer-cent `yes_ask` if that is all the market carries."""
-    ask = _to_decimal(market.get("yes_ask_dollars"))
-    if ask is not None:
-        return ask
-    cents = _to_decimal(market.get("yes_ask"))
-    if cents is None:
-        return None
-    return cents / Decimal(100) if cents > 1 else cents
+    """The YES ask in dollars, read from `yes_ask_dollars`.
+
+    Returns None if the field is absent or unparseable — the caller then simply
+    skips the market (a safe no-trade). We deliberately do NOT fall back to a
+    legacy integer-cent field: silently mis-scaling a price is far worse than
+    skipping a market. If a market lacks the ask, the trader can backfill it
+    from the order book (DERIVE_ASK_FROM_ORDERBOOK) before sizing.
+    """
+    return _to_decimal(market.get("yes_ask_dollars"))
 
 
 def parse_ask_liquidity(market: dict) -> Optional[Decimal]:
