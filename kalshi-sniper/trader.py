@@ -11,6 +11,7 @@ you have validated behaviour against the demo environment.
 
 from __future__ import annotations
 
+import argparse
 import logging
 import logging.handlers
 import os
@@ -20,7 +21,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any, Optional
+from typing import Any
 
 import config
 import strategy
@@ -158,6 +159,18 @@ class Trader:
             logger.error("Could not refresh settlements: %s", exc)
         return self.store.realized_pnl_today()
 
+    def _trading_active(self) -> bool:
+        """True if the exchange is currently permitting trading. Fail-open: if the
+        status can't be fetched or the field is absent, assume active — order
+        placement itself rejects anyway if the exchange is genuinely closed."""
+        try:
+            status = self.client.get_exchange_status()
+        except KalshiAPIError as exc:
+            logger.warning("Could not fetch exchange status (%s) — proceeding.", exc)
+            return True
+        active = status.get("trading_active")
+        return True if active is None else bool(active)
+
     def run_cycle(self) -> None:
         # 0. Realized-P&L / daily-loss guard (settlements refreshed first).
         pnl_today = self._refresh_settlements_and_pnl()
@@ -185,6 +198,12 @@ class Trader:
                 config.MIN_BALANCE,
             )
             self._status_line(balance, Decimal(0), 0, 0, 0)
+            return
+
+        # 1.5 Skip when the exchange isn't accepting trades (avoids firing orders
+        #     outside trading hours or during maintenance). Fail-open on errors.
+        if not self._trading_active():
+            logger.info("Exchange not trading right now — skipping this cycle.")
             return
 
         # 2. Existing positions + resting orders -> dedup set + deployed capital.
@@ -444,18 +463,33 @@ def build_client() -> KalshiClient:
     )
 
 
-def main() -> None:
+def main(argv=None) -> None:
+    parser = argparse.ArgumentParser(description="Kalshi high-probability auto-sniper.")
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Run a single scan/size/place cycle and exit (good for a first dry-run).",
+    )
+    args = parser.parse_args(argv)
+
     setup_logging()
     config.require_credentials()  # crashes loudly with a clear message if missing
     client = build_client()
     store = Store(config.DB_PATH)
-    trader = Trader(client, store)
+    bot = Trader(client, store)
 
-    signal.signal(signal.SIGINT, trader.request_stop)
-    signal.signal(signal.SIGTERM, trader.request_stop)
+    signal.signal(signal.SIGINT, bot.request_stop)
+    signal.signal(signal.SIGTERM, bot.request_stop)
 
     print_banner()
-    trader.run_forever()
+    if args.once:
+        logger.info("Running a single cycle (--once).")
+        try:
+            bot.run_cycle()
+        finally:
+            bot._shutdown()
+    else:
+        bot.run_forever()
 
 
 if __name__ == "__main__":

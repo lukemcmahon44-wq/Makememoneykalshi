@@ -52,6 +52,7 @@ class FakeClient:
         settlements=None,
         order_result=None,
         order_error=False,
+        trading_active=True,
     ):
         self._balance = Decimal(balance)
         self._markets = markets or []
@@ -60,7 +61,11 @@ class FakeClient:
         self._settlements = settlements or []
         self._order_result = order_result
         self._order_error = order_error
+        self._trading_active = trading_active
         self.placed_orders: list[dict] = []
+
+    def get_exchange_status(self):
+        return {"trading_active": self._trading_active, "exchange_active": True}
 
     def get_settlements(self, min_ts=None, limit=200):
         return self._settlements
@@ -158,6 +163,14 @@ def test_deployed_cap_stops_placement(store):
 def test_balance_floor_halts_buying(store):
     config.DRY_RUN = True
     client = FakeClient(balance="3", markets=[mk("A")])  # below MIN_BALANCE
+    trader.Trader(client, store).run_cycle()
+    assert fills(store) == [] and client.placed_orders == []
+
+
+# ── Exchange-hours gate ─────────────────────────────────────────────────────--
+def test_skips_when_exchange_not_trading(store):
+    config.DRY_RUN = True
+    client = FakeClient(balance="100", markets=[mk("A")], trading_active=False)
     trader.Trader(client, store).run_cycle()
     assert fills(store) == [] and client.placed_orders == []
 

@@ -326,6 +326,11 @@ class KalshiClient:
             return None
         return Decimal(1) - best_no
 
+    # ── Exchange ──────────────────────────────────────────────────────────────
+    def get_exchange_status(self) -> dict:
+        """Exchange status flags: {exchange_active, trading_active, ...}."""
+        return self._request("GET", "/exchange/status")
+
     # ── Orders ────────────────────────────────────────────────────────────────
     def place_order(
         self,

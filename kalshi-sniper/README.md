@@ -49,8 +49,10 @@ kalshi-sniper/
 ├── strategy.py        # Pure candidate selection + position sizing
 ├── trader.py          # Main loop: scan -> size -> execute -> log
 ├── state.py           # SQLite fill log + settlement P&L tracking
+├── preflight.py       # One-shot signed auth/connectivity check (no orders)
 ├── test_strategy.py   # Unit tests for sizing + selection
 ├── test_trader.py     # Unit tests for the loop's guard rails
+├── test_client.py     # Unit tests for the signed REST client contract
 ├── requirements.txt
 ├── .env.example
 └── README.md
@@ -83,8 +85,18 @@ cp .env.example .env        # then edit .env
 
 ## Running
 
+First, verify your key, signing, and host with a single safe request (places no
+orders, exits non-zero on any problem):
+
 ```bash
-python trader.py
+python preflight.py
+```
+
+Then run a single cycle to watch one scan, or start the continuous loop:
+
+```bash
+python trader.py --once   # one scan/size/place cycle, then exit
+python trader.py          # continuous loop
 ```
 
 The startup banner shows the active mode loudly. In the default DEMO + DRY-RUN
@@ -137,6 +149,8 @@ All knobs live in `config.py` (with comments). The most important:
 - **Balance floor** and **per-market cap** bound exposure.
 - **Daily loss limit** halts new buying until manual restart.
 - **Fill-or-kill** orders — no stale resting bids left at a moved market.
+- **Exchange-hours gate**: a cycle is skipped when `trading_active` is false
+  (fails open if the status can't be read — order placement rejects anyway).
 - **Rate limiting** self-throttles below Basic-tier limits (18 reads/s, 8 writes/s).
 - **Kill switch**: SIGINT/SIGTERM shut the loop down cleanly and report any
   resting orders (set `CANCEL_ON_EXIT=true` to also cancel them).
@@ -153,7 +167,10 @@ round-down, dedup, time-to-close, liquidity, fractional handling, ordering, and
 asserts no `float` ever appears in the order strings. `test_trader.py` covers the
 loop's guard rails: the order-by-order deployed-capital cap, in-cycle dedup, the
 balance floor and daily-loss halt, and correct deployed-capital accounting when a
-fill-or-kill order is *killed* vs. *filled*.
+fill-or-kill order is *killed* vs. *filled*. `test_client.py` pins the signed REST
+contract: the exact order payload, the auth headers (13-digit ms timestamp), the
+query-string-free signing path, balance parsing, pagination, and 401/400/429
+handling.
 
 ## Reconciliation (do this before going live)
 
