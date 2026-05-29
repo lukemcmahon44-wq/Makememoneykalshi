@@ -236,3 +236,39 @@ def test_order_api_error_is_isolated(store):
     assert len(client.placed_orders) == 2           # both attempted; neither deployed
     rows = fills(store)
     assert len(rows) == 2 and all(r["status"] is None for r in rows)
+
+
+# ── Single-instance lock ────────────────────────────────────────────────────--
+def test_lock_refuses_when_holder_is_alive(tmp_path):
+    path = str(tmp_path / "s.lock")
+    with open(path, "w") as fh:
+        fh.write("4242")
+    with pytest.raises(RuntimeError):
+        trader.acquire_singleton_lock(path, pid_alive=lambda pid: True)
+
+
+def test_lock_reclaims_stale(tmp_path):
+    path = str(tmp_path / "s.lock")
+    with open(path, "w") as fh:
+        fh.write("4242")  # a PID we declare dead
+    trader.acquire_singleton_lock(path, pid_alive=lambda pid: False)
+    with open(path) as fh:
+        assert fh.read().strip() == str(os.getpid())  # reclaimed by us
+    trader.release_singleton_lock(path)
+    assert not os.path.exists(path)
+
+
+def test_lock_refuses_when_pid_unreadable(tmp_path):
+    path = str(tmp_path / "s.lock")
+    with open(path, "w") as fh:
+        fh.write("")  # unreadable PID -> refuse rather than risk a double-run
+    with pytest.raises(RuntimeError):
+        trader.acquire_singleton_lock(path, pid_alive=lambda pid: False)
+
+
+def test_lock_acquire_release_roundtrip(tmp_path):
+    path = str(tmp_path / "s.lock")
+    trader.acquire_singleton_lock(path)
+    assert os.path.exists(path)
+    trader.release_singleton_lock(path)
+    assert not os.path.exists(path)

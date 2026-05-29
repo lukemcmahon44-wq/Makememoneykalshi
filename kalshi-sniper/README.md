@@ -154,6 +154,9 @@ All knobs live in `config.py` (with comments). The most important:
 - **Rate limiting** self-throttles below Basic-tier limits (18 reads/s, 8 writes/s).
 - **Kill switch**: SIGINT/SIGTERM shut the loop down cleanly and report any
   resting orders (set `CANCEL_ON_EXIT=true` to also cancel them).
+- **Single-instance lock**: a PID lock file (`LOCK_PATH`) prevents a second bot
+  from trading the same account at once; a stale lock (dead PID) is reclaimed
+  automatically.
 
 ## Tests
 
@@ -170,7 +173,8 @@ balance floor and daily-loss halt, and correct deployed-capital accounting when 
 fill-or-kill order is *killed* vs. *filled*. `test_client.py` pins the signed REST
 contract: the exact order payload, the auth headers (13-digit ms timestamp), the
 query-string-free signing path, balance parsing, pagination, and 401/400/429
-handling.
+handling. A GitHub Actions workflow (`.github/workflows/sniper-tests.yml`) runs
+the whole suite on every push/PR that touches the bot.
 
 ## Reconciliation (do this before going live)
 

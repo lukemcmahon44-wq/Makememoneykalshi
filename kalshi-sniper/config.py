@@ -185,3 +185,7 @@ LOG_DIR = os.getenv("LOG_DIR", "logs")
 LOG_FILE = os.path.join(LOG_DIR, "sniper.log")
 # Persistent fill / settlement store (SQLite).
 DB_PATH = os.getenv("DB_PATH", "sniper_state.db")
+
+# PID lock file — prevents two bot instances trading the same account at once
+# (each would size against the full balance and could breach the deployed cap).
+LOCK_PATH = os.getenv("LOCK_PATH", "sniper.lock")

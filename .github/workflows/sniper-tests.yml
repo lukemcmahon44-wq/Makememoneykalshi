@@ -1,0 +1,27 @@
+name: kalshi-sniper tests
+
+on:
+  push:
+    paths:
+      - "kalshi-sniper/**"
+      - ".github/workflows/sniper-tests.yml"
+  pull_request:
+    paths:
+      - "kalshi-sniper/**"
+      - ".github/workflows/sniper-tests.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: kalshi-sniper
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run tests
+        run: python -m pytest -q

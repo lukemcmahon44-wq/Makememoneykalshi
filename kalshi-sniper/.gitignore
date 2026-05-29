@@ -11,6 +11,10 @@ kalshi_key*
 *.db-wal
 sniper_state.db
 
+# Single-instance lock
+*.lock
+sniper.lock
+
 # Logs
 logs/
 *.log

@@ -448,6 +448,75 @@ class Trader:
 # ──────────────────────────────────────────────────────────────────────────────
 # Entry point
 # ──────────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
+# Single-instance lock — stops two bots trading the same account concurrently
+# (each would size against the full balance and could blow past the deployed cap).
+# ──────────────────────────────────────────────────────────────────────────────
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists, owned by another user
+    except OSError:
+        return False
+    return True
+
+
+def _read_lock_pid(path: str) -> int:
+    try:
+        with open(path) as fh:
+            return int(fh.read().strip() or "-1")
+    except (OSError, ValueError):
+        return -1
+
+
+def acquire_singleton_lock(path: str, *, pid_alive=_pid_alive) -> None:
+    """Create an exclusive PID lock file, or raise if a LIVE instance holds it.
+
+    A lock whose PID is definitively dead is reclaimed. If the lock exists but its
+    PID is unreadable, we refuse to start (the safe direction: never risk a
+    second bot trading the same account).
+    """
+    for _ in range(2):
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            try:
+                os.write(fd, str(os.getpid()).encode())
+            finally:
+                os.close(fd)
+            return
+        except FileExistsError:
+            existing = _read_lock_pid(path)
+            if existing <= 0:
+                raise RuntimeError(
+                    f"A lock file exists but its PID is unreadable: {path}. "
+                    "If no sniper is running, delete it and retry."
+                )
+            if existing != os.getpid() and pid_alive(existing):
+                raise RuntimeError(
+                    f"Another sniper instance appears to be running (PID {existing}). "
+                    "Refusing to start a second one against the same account. "
+                    f"If that is wrong, delete the stale lock file: {path}"
+                )
+            # Stale (dead PID) or our own — reclaim and retry once.
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+    raise RuntimeError(f"Could not acquire lock file {path}")
+
+
+def release_singleton_lock(path: str) -> None:
+    """Remove the lock file iff it belongs to this process."""
+    if _read_lock_pid(path) == os.getpid():
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
 def build_client() -> KalshiClient:
     return KalshiClient(
         api_key_id=config.KALSHI_API_KEY_ID,
@@ -474,6 +543,13 @@ def main(argv=None) -> None:
 
     setup_logging()
     config.require_credentials()  # crashes loudly with a clear message if missing
+
+    try:
+        acquire_singleton_lock(config.LOCK_PATH)
+    except RuntimeError as exc:
+        logger.error("%s", exc)
+        sys.exit(1)
+
     client = build_client()
     store = Store(config.DB_PATH)
     bot = Trader(client, store)
@@ -482,14 +558,17 @@ def main(argv=None) -> None:
     signal.signal(signal.SIGTERM, bot.request_stop)
 
     print_banner()
-    if args.once:
-        logger.info("Running a single cycle (--once).")
-        try:
-            bot.run_cycle()
-        finally:
-            bot._shutdown()
-    else:
-        bot.run_forever()
+    try:
+        if args.once:
+            logger.info("Running a single cycle (--once).")
+            try:
+                bot.run_cycle()
+            finally:
+                bot._shutdown()
+        else:
+            bot.run_forever()
+    finally:
+        release_singleton_lock(config.LOCK_PATH)
 
 
 if __name__ == "__main__":
