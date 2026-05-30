@@ -1,133 +1,92 @@
 """
-main.py — Entry point for the Kalshi Edge Trading Bot.
+main.py — Entry point for the Kalshi high-probability auto-trader.
 
-Usage:
+Run:
     python main.py
-
-Performs startup checks, prints all-time P&L summary, then
-hands off to the blocking bot loop.
 """
 
+from __future__ import annotations
+
 import logging
-import logging.handlers
-import os
 import sys
-import traceback
 
-from dotenv import load_dotenv
-
-# Load .env before importing anything that reads os.getenv
-load_dotenv()
-
-import db
-import bot
-from db import get_pnl_summary
+import config
+import logging_setup
+from kalshi import KalshiClient
+from kalshi.auth import KalshiSigner
+from trader import run_forever
 
 
-# ── Logging setup ──────────────────────────────────────────────────────────────
+def _build_signer() -> KalshiSigner:
+    if config.KALSHI_PRIVATE_KEY_PATH:
+        return KalshiSigner.from_pem_file(
+            config.KALSHI_API_KEY_ID, config.KALSHI_PRIVATE_KEY_PATH
+        )
+    if config.KALSHI_PRIVATE_KEY:
+        return KalshiSigner.from_pem_string(
+            config.KALSHI_API_KEY_ID, config.KALSHI_PRIVATE_KEY
+        )
+    raise RuntimeError("No Kalshi private key configured")
 
-def setup_logging() -> None:
-    log_file  = os.getenv("LOG_FILE",  "bot.log")
-    log_level = os.getenv("LOG_LEVEL", "INFO").upper()
 
-    level = getattr(logging, log_level, logging.INFO)
+def _banner(logger: logging.Logger) -> None:
+    snap = config.snapshot()
+    logger.info("=" * 64)
+    logger.info("  Kalshi High-Probability Auto-Trader")
+    logger.info("=" * 64)
+    logger.info("  environment            : %s", snap.environment)
+    logger.info("  base url               : %s", snap.base_url)
+    logger.info("  LIVE_TRADING           : %s", snap.live_trading)
+    logger.info("  sizing mode            : %s", snap.sizing_mode)
+    logger.info("  fixed trade size       : $%.2f", snap.fixed_trade_size_usd)
+    logger.info("  price band             : %d..%d¢", *snap.price_band)
+    logger.info("  re-eval interval (hrs) : %.2f", snap.recheck_interval_hours)
+    logger.info("  api key id set         : %s", snap.api_key_id_set)
+    logger.info("  private key source     : %s", snap.private_key_source)
+    logger.info("  log file               : %s", snap.log_file)
+    logger.info("=" * 64)
+    if not snap.live_trading:
+        logger.info("  DRY-RUN MODE — no orders will be submitted.")
+        logger.info("  Flip LIVE_TRADING=True in your .env to trade for real.")
+        logger.info("=" * 64)
 
-    # Rotating file handler (10 MB, keep 3 files)
-    file_handler = logging.handlers.RotatingFileHandler(
-        log_file, maxBytes=10 * 1024 * 1024, backupCount=3, encoding="utf-8"
+
+def main() -> int:
+    logging_setup.setup(config.LOG_LEVEL, config.LOG_FILE)
+    logger = logging.getLogger("main")
+
+    problems = config.validate()
+    if problems:
+        for p in problems:
+            logger.error("CONFIG ERROR  | %s", p)
+        logger.error("Fix the above in your .env and re-run.")
+        return 2
+
+    _banner(logger)
+
+    try:
+        signer = _build_signer()
+    except Exception as exc:
+        logger.error("AUTH ERROR    | could not load private key: %s", exc)
+        return 2
+
+    client = KalshiClient(
+        base_url=config.base_url(),
+        signer=signer,
+        timeout=config.HTTP_TIMEOUT_SECONDS,
+        max_retries=config.HTTP_MAX_RETRIES,
+        backoff_base=config.HTTP_BACKOFF_BASE_SECONDS,
+        backoff_cap=config.HTTP_BACKOFF_CAP_SECONDS,
     )
-
-    # Console handler with colour via colorlog if available
     try:
-        import colorlog
-        console_handler = colorlog.StreamHandler()
-        console_handler.setFormatter(colorlog.ColoredFormatter(
-            "%(log_color)s%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-        ))
-    except ImportError:
-        console_handler = logging.StreamHandler(sys.stdout)
-        console_handler.setFormatter(logging.Formatter(
-            "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-        ))
-
-    file_handler.setFormatter(logging.Formatter(
-        "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    ))
-
-    root = logging.getLogger()
-    root.setLevel(level)
-    root.addHandler(file_handler)
-    root.addHandler(console_handler)
-
-
-# ── Startup validation ─────────────────────────────────────────────────────────
-
-def check_required_env() -> None:
-    required = ["KALSHI_API_KEY"]
-    missing = [k for k in required if not os.getenv(k)]
-    if missing:
-        print(f"ERROR: Missing required environment variables: {', '.join(missing)}")
-        print("Copy .env.example to .env and fill in your API keys.")
-        sys.exit(1)
-
-
-def print_pnl_banner() -> None:
-    summary = get_pnl_summary()
-    print("=" * 55)
-    print("  Kalshi Edge Bot — All-Time P&L Summary")
-    print("=" * 55)
-    print(f"  Total trades  : {summary['total_trades']}")
-    print(f"  Wins          : {summary['wins']}")
-    print(f"  Losses        : {summary['losses']}")
-    print(f"  Win rate      : {summary['win_rate']:.1f}%")
-    total_pnl = summary['total_pnl_cents']
-    sign = "+" if total_pnl >= 0 else ""
-    print(f"  Total P&L     : {sign}{total_pnl:.1f}¢  (${total_pnl/100:.2f})")
-    print("=" * 55)
-    print()
-
-
-# ── Entry ──────────────────────────────────────────────────────────────────────
-
-def main() -> None:
-    setup_logging()
-    logger = logging.getLogger(__name__)
-
-    logger.info("=" * 55)
-    logger.info("  Kalshi Edge Trading Bot starting up")
-    logger.info("=" * 55)
-
-    check_required_env()
-
-    try:
-        db.init_db()
-    except Exception:
-        logger.critical("Database initialisation failed:\n%s", traceback.format_exc())
-        sys.exit(1)
-
-    print_pnl_banner()
-
-    logger.info(
-        "Config — EDGE_THRESHOLD=%.1f%% | MAX_POSITIONS=%d | MAX_SIZE=$%.2f | "
-        "HALT_BELOW=$%.2f | SCAN=%ds",
-        float(os.getenv("EDGE_THRESHOLD", "8")),
-        int(os.getenv("MAX_OPEN_POSITIONS", "5")),
-        float(os.getenv("MAX_POSITION_SIZE", "2")),
-        float(os.getenv("MIN_BALANCE_HALT", "5")),
-        int(os.getenv("SCAN_INTERVAL", "60")),
-    )
-
-    try:
-        bot.run_loop()
+        run_forever(client, recheck_interval_hours=config.RECHECK_INTERVAL_HOURS)
     except KeyboardInterrupt:
-        logger.info("Bot stopped by user (KeyboardInterrupt)")
-    except Exception:
-        logger.critical("Fatal error in bot loop:\n%s", traceback.format_exc())
-        sys.exit(1)
+        logger.info("Interrupted by user. Goodbye.")
+        return 0
+    finally:
+        client.close()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

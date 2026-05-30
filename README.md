@@ -1,166 +1,239 @@
-# Kalshi Edge Trading Bot
+# Kalshi High-Probability Auto-Trader
 
-A production-ready Python bot that identifies and auto-executes trades on [Kalshi](https://kalshi.com) prediction markets using real external data (weather forecasts, sports odds, news sentiment, and polling data) to calculate a statistical edge before placing any order.
+A Python bot that scans Kalshi's open markets, picks Yes contracts priced
+between 95¢ and 99¢, and buys them cheapest-first until the account can no
+longer afford a single contract. Then it sleeps 4 hours and looks again.
+
+> ### ⚠️ Read this before you flip live
+> This strategy has **negative expected value after fees**. At 95–99¢ the
+> Yes side is already near-certain; the spread plus Kalshi's fee makes the
+> long-run EV negative even when you "win" most of the time. The bot is
+> built correctly and safely, but the math of the strategy itself is not.
+> The default config ships in dry-run mode (`LIVE_TRADING=False`) against
+> Kalshi's demo environment for a reason. Keep it there until you've
+> watched a few passes and you understand the trade-offs.
 
 ---
 
-## How It Works
+## What the bot does, in one pass
 
-1. Every 60 seconds, the bot fetches all open Kalshi markets.
-2. Each market is passed through four data providers (weather, sports, news, polling). The first matching provider returns a probability estimate (0–100).
-3. **Edge = my_probability − Kalshi's YES price**. If edge ≥ 8%, the bot places a limit YES order for 1 contract.
-4. Open positions are monitored continuously. Exits happen on: market resolution, stop-loss (−15¢), or edge flip (−10%).
-5. All trades are logged to SQLite. Alerts fire via Telegram.
+1. Read live cash balance from Kalshi.
+2. Page through every open market.
+3. Keep only markets whose best Yes ask is in `[95, 99]¢`, are still open,
+   have enough resting size, and that you don't already hold.
+4. Sort survivors cheapest-first (95 before 96 before … before 99).
+   Ties broken by liquidity, then soonest close time, then ticker.
+5. Walk the list, sizing each order with fees included:
+   - `FIXED_DOLLAR` mode: spend up to `FIXED_TRADE_SIZE_USD` per market.
+   - `ALL_IN_PER_MARKET` mode: dump the whole balance into the top market.
+6. Submit a limit Yes buy at the current ask (never a naked market order).
+7. Reconcile with `/portfolio/orders/{id}` + `/portfolio/fills` — no fill
+   is assumed.
+8. Stop when the working budget can't afford one contract at 95¢ + fee.
+9. Sleep 4 hours, then start over.
 
 ---
 
-## Project Structure
+## Repository layout
 
 ```
 .
-├── main.py               # Entry point — logging setup, P&L banner, starts bot loop
-├── bot.py                # Core scan/trade/exit loop
-├── kalshi_client.py      # Kalshi REST API v2 wrapper
-├── edge_calculator.py    # Runs providers, computes edge
-├── providers/
-│   ├── __init__.py       # Exports ALL_PROVIDERS list
-│   ├── weather.py        # OpenWeatherMap forecast → probability
-│   ├── sports.py         # The Odds API moneyline → implied probability
-│   ├── news.py           # NewsAPI + TextBlob sentiment → probability
-│   └── polling.py        # Configurable polling JSON endpoint → probability
-├── db.py                 # SQLite: positions, trades, P&L summary
-├── alerts.py             # Telegram entry/exit/halt notifications
-├── pnl_report.py         # Standalone P&L table printer
+├── main.py                 entry point — boots, validates, runs forever
+├── config.py               all configuration; reads .env, validates inputs
+├── trader.py               run_pass() and run_forever() — the loop
+├── executor.py             dry-run + live order placement, reconciliation
+├── logging_setup.py        console + rotating-file logging
+├── kalshi/
+│   ├── __init__.py
+│   ├── auth.py             RSA-PSS request signing (KALSHI-ACCESS-* headers)
+│   └── client.py           httpx-based REST client + retry/backoff
+├── strategy/
+│   ├── fees.py             integer-cent fee math
+│   ├── filter.py           keep only 95-99¢ Yes asks, open, not held, liquid
+│   ├── ranker.py           cheapest first, deterministic tie-breaks
+│   └── sizer.py            contract-count math for both sizing modes
+├── tests/                  pytest suite (48 unit tests + 3 demo integration)
 ├── requirements.txt
-├── .env.example          # All env vars documented — copy to .env
-├── supervisord.conf      # Auto-restart via supervisord
-├── railway.toml          # One-click Railway deployment
+├── .env.example
+├── .gitignore              excludes .env, *.pem, *.key, logs
+├── pytest.ini
 └── README.md
 ```
 
 ---
 
-## Quick Start (Local)
+## Getting Kalshi API keys
 
-### 1. Clone and install
+1. Sign up at https://kalshi.com (or use the demo URL listed below) and
+   complete identity verification on the account you'll trade with.
+2. Go to **Profile → API Keys → Create new key**.
+3. Kalshi shows you a **Key ID** (UUID-ish) and downloads an **RSA private
+   key** as a `.pem` file. **Save the PEM file outside the repo** (or
+   inside, but make sure `.gitignore` is in effect — it is by default).
+4. For demo, go to https://demo.kalshi.co, create a separate account, and
+   create a separate API key there. Demo keys do not work in production
+   and vice versa.
+
+---
+
+## Installation
 
 ```bash
 git clone <your-repo-url>
 cd Makememoneykalshi
-python -m venv venv
-source venv/bin/activate        # Windows: venv\Scripts\activate
+python3 -m venv venv
+source venv/bin/activate           # Windows: venv\Scripts\activate
 pip install -r requirements.txt
-python -m textblob.download_corpora   # downloads NLTK data for sentiment
-```
-
-### 2. Configure
-
-```bash
 cp .env.example .env
-nano .env   # fill in your API keys (see table below)
+$EDITOR .env                       # fill in real values
 ```
 
-### 3. Run
+`.env`:
+
+```
+KALSHI_API_KEY_ID=<the UUID Kalshi gave you>
+KALSHI_PRIVATE_KEY_PATH=/absolute/path/to/your_demo_private_key.pem
+ENVIRONMENT=demo
+```
+
+Optional overrides (defaults shown):
+
+```
+LIVE_TRADING=false                 # set true to actually submit orders
+SIZING_MODE=FIXED_DOLLAR           # or ALL_IN_PER_MARKET
+FIXED_TRADE_SIZE_USD=1.00
+RECHECK_INTERVAL_HOURS=4
+MIN_LIQUIDITY_CONTRACTS=1
+LOG_FILE=trader.log
+LOG_LEVEL=INFO
+```
+
+---
+
+## Running
+
+### Dry run (default)
 
 ```bash
 python main.py
 ```
 
-On first run you'll see an all-time P&L summary (empty to start), then the scan loop begins.
+You'll see a boot banner, then per-pass logs of: balance, filtered
+candidates, considered orders, dry-run intent, and the 4-hour sleep.
+Nothing is submitted to Kalshi.
 
-### 4. View P&L
+### Go live (after testing!)
 
-```bash
-python pnl_report.py               # full history
-python pnl_report.py --provider news
-python pnl_report.py --since 2024-06-01
-python pnl_report.py --closed-only
+Open `.env` and change exactly one line:
+
+```
+LIVE_TRADING=true
 ```
 
----
+Save, then `python main.py` again. The bot now submits limit Yes buys at
+the current ask. Keep `ENVIRONMENT=demo` until you have watched several
+live passes in demo and are happy with the behavior.
 
-## API Keys You Need
+### Switch sizing mode
 
-| Key | Where to get it | Free tier |
-|-----|----------------|-----------|
-| `KALSHI_API_KEY` | [kalshi.com](https://kalshi.com) → Settings → API | Yes |
-| `TELEGRAM_BOT_TOKEN` | Message [@BotFather](https://t.me/BotFather) on Telegram | Yes |
-| `TELEGRAM_CHAT_ID` | Message [@userinfobot](https://t.me/userinfobot) on Telegram | Yes |
-| `OPENWEATHER_API_KEY` | [openweathermap.org/api](https://openweathermap.org/api) | Yes (1000 req/day) |
-| `ODDS_API_KEY` | [the-odds-api.com](https://the-odds-api.com) | Yes (500 req/month) |
-| `NEWS_API_KEY` | [newsapi.org](https://newsapi.org) | Yes (100 req/day) |
-| `POLLING_URL` | Your own endpoint or skip (polling provider will be inactive) | N/A |
+In `.env`, change exactly one line:
 
----
-
-## Environment Variables Reference
-
-See [`.env.example`](.env.example) for the full annotated list. Key variables:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `EDGE_THRESHOLD` | `8` | Minimum edge % to place a trade |
-| `MAX_OPEN_POSITIONS` | `5` | Max simultaneous positions |
-| `MAX_POSITION_SIZE` | `2` | Max dollars per trade |
-| `MIN_BALANCE_HALT` | `5` | Halt trading if balance drops below this |
-| `SCAN_INTERVAL` | `60` | Seconds between market scans |
-
----
-
-## Deploy to Railway
-
-Railway runs the bot 24/7 in the cloud for ~$5/month.
-
-### Steps
-
-1. Push this repo to GitHub.
-2. Go to [railway.app](https://railway.app) → **New Project** → **Deploy from GitHub repo**.
-3. Select your repo. Railway auto-detects `railway.toml` and uses `python main.py`.
-4. Click **Variables** → **Add all variables from `.env`** (copy each key/value).
-5. Click **Deploy**. The bot starts immediately.
-6. View logs in Railway's dashboard → **Logs** tab.
-
-> **Important**: Railway's free tier sleeps after inactivity. Use the **Hobby plan ($5/mo)** for always-on execution.
-
----
-
-## Auto-Restart with supervisord (Linux VPS)
-
-```bash
-pip install supervisor
-supervisord -c supervisord.conf
-supervisorctl -c supervisord.conf status
+```
+SIZING_MODE=ALL_IN_PER_MARKET
 ```
 
-The bot auto-restarts up to 10 times on crash with a 5-second grace period.
+The bot now places one big order into the single top-ranked market each
+pass instead of $1 slices across many markets.
 
 ---
 
-## Risk Controls Summary
+## Tests
 
-| Control | Value |
-|---------|-------|
-| Max per trade | $2 (1 contract × capped price) |
-| Max open positions | 5 |
-| Minimum edge required | 8% |
-| Stop-loss | Exit if YES drops ≥ 15¢ below entry |
-| Edge-flip exit | Exit if edge turns −10% or worse |
-| Low balance halt | Suspend new trades below $5 balance |
-| Min open interest | Skip markets with < 100 contracts OI |
-| Min time to expiry | Skip markets expiring in < 2 hours |
+```bash
+pip install pytest
+pytest                                 # 48 unit tests, no network
+```
+
+Demo integration tests are gated on real credentials and `ENVIRONMENT=demo`:
+
+```bash
+ENVIRONMENT=demo pytest -m demo -v
+```
+
+The "place a tiny test order" step is *further* gated on
+`KALSHI_INTEGRATION_PLACE_ORDER=1` so that a routine `pytest` run never
+spends demo cash unless you explicitly opt in:
+
+```bash
+ENVIRONMENT=demo KALSHI_INTEGRATION_PLACE_ORDER=1 pytest -m demo -v
+```
+
+Production tests are not provided. Do not point integration tests at
+production.
 
 ---
 
-## Telegram Alerts
+## API details verified against Kalshi's current docs (May 2026)
 
-| Event | Message format |
-|-------|---------------|
-| New trade | `EDGE TRADE: TICKER \| Edge: +X% \| My prob: X% \| Kalshi: X¢ \| Provider: name` |
-| Exit | `EXIT: TICKER \| Entry: X¢ \| Exit: X¢ \| P&L: ±X¢ \| Reason: resolved/stop/edge-flip` |
-| Low balance | `HALT: Balance below $5. Trading suspended.` |
+| What                  | Value                                                                  |
+| --------------------- | ---------------------------------------------------------------------- |
+| Demo base URL         | `https://demo-api.kalshi.co/trade-api/v2`                              |
+| Production base URL   | `https://api.elections.kalshi.com/trade-api/v2`                        |
+| Auth                  | API key ID + RSA private key, RSA-PSS / SHA-256, MGF1, salt 32 bytes   |
+| Auth headers          | `KALSHI-ACCESS-KEY`, `KALSHI-ACCESS-TIMESTAMP`, `KALSHI-ACCESS-SIGNATURE` |
+| Signed string         | `f"{timestamp_ms}{METHOD}{path}"` — path includes the `/trade-api/v2` prefix, query string excluded |
+| Prices                | integer cents, 1..99; tick = 1¢ for most markets                       |
+| Min order size        | 1 contract                                                             |
+| Taker fee formula     | `fee = ceil(0.07 × contracts × price × (1 − price))` rounded up to the cent. Computed in integer cents in `strategy/fees.py` |
+
+Override the URLs without a code change by setting `KALSHI_DEMO_BASE_URL`
+and/or `KALSHI_PROD_BASE_URL` in `.env` — Kalshi has rotated hosts before
+(`demo-api.kalshi.co`, `external-api.demo.kalshi.co`,
+`trading-api.kalshi.com`, `api.elections.kalshi.com`) and will likely do
+so again. If the docs list a different host than the defaults above, set
+the env var rather than editing `config.py`.
+
+### Discrepancies vs. the reference values in the spec
+
+- **Demo base URL** — the spec's `https://demo-api.kalshi.co/trade-api/v2`
+  is the one we kept as default, but Kalshi's newer docs sometimes route
+  demo traffic via `https://external-api.demo.kalshi.co/trade-api/v2`.
+  Both have worked at different points; the env override above is the
+  escape hatch.
+- **Production base URL** — historical hosts include
+  `trading-api.kalshi.com` and `api.elections.kalshi.com`. We default to
+  the elections host; if Kalshi flips back to `trading-api`, override via
+  `KALSHI_PROD_BASE_URL`.
+- **Fee formula** — the spec is correct in shape
+  (`ceil(0.07 × contracts × price × (1 − price))`). Kalshi's documented
+  precision is technically centicents (1/10000 dollar) before rounding,
+  but ceiling-to-cent gives the same answer for all 95–99¢ inputs we care
+  about, so we use the simpler cent-ceiling.
+
+---
+
+## Safety design
+
+- All money math is integer cents. Floats only show up at the log line.
+- Live balance is read every pass; no cached number is used to size.
+- Idempotent client_order_ids (`hp-<uuid>`); each market is bought at
+  most once per pass, reconciled against live `/positions` and `/fills`.
+- `MarketClosedError` is a distinct exception so a market that flips to
+  settled between scan and submit is logged cleanly, not crashed on.
+- HTTP retries with exponential backoff + jitter on 429/5xx and
+  transport errors, capped at `HTTP_BACKOFF_CAP_SECONDS`.
+- If the balance read fails, the pass is skipped entirely (no trading on
+  unknown cash).
+- `LIVE_TRADING=False` means the executor never calls `place_order` —
+  unit-tested in `tests/test_executor.py`.
+- `.gitignore` excludes `.env`, `*.pem`, `*.key`, and `logs/` so you
+  can't accidentally commit credentials.
 
 ---
 
 ## Disclaimer
 
-This bot is provided for educational and research purposes. Prediction market trading involves financial risk. Past performance does not guarantee future results. Always paper-trade first by setting `EDGE_THRESHOLD` very high (e.g., `99`) so no real orders are placed while you validate the setup.
+Not financial advice. Prediction-market trading carries real loss
+potential, and as noted at the top this particular strategy is
+negative-EV in expectation. Use the demo environment, keep your stake
+small, and read the bot's logs.
