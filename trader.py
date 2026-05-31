@@ -243,12 +243,11 @@ def run_pass(
         bought_this_pass.add(cand.ticker)
         if result.status == "filled":
             summary.orders_filled += 1
-        spent = result.filled_cost_cents + result.filled_fee_cents
-        if spent <= 0:
-            # No fills yet — treat the worst-case max outlay as committed
-            # for budgeting; we won't re-buy this market in this pass anyway.
-            spent = decision.total_outlay_cents
-        working_budget -= spent
+        # Always debit the full intended outlay — even on a partial fill,
+        # Kalshi reserves the resting portion's cash from `balance`. Using
+        # the filled-only number here would let us over-commit the local
+        # working_budget within a single pass.
+        working_budget -= decision.total_outlay_cents
 
         if sizing_mode == "ALL_IN_PER_MARKET":
             logger.info("ALL-IN done   | stopping after one market.")
