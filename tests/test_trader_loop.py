@@ -107,3 +107,45 @@ def test_balance_read_failure_halts_pass_cleanly():
     assert summary.halt_reason == "balance_read_failed"
     assert summary.errors == 1
     client.iter_markets.assert_not_called()
+
+
+def test_flat_position_is_not_treated_as_held():
+    # Regression: a market in which we used to trade but currently hold zero
+    # contracts (position == 0, total_traded > 0) must NOT be skipped.
+    from trader import _held_tickers
+    client = MagicMock()
+    client.get_positions.return_value = [
+        {"ticker": "FLAT_AFTER_ROUND_TRIP", "position": 0, "total_traded": 50},
+        {"ticker": "LONG_YES", "position": 7},
+        {"ticker": "SHORT_NO", "position": -3},
+        {"ticker": "NO_POSITION_FIELD"},                 # missing entirely → not held
+    ]
+    held = _held_tickers(client)
+    assert "FLAT_AFTER_ROUND_TRIP" not in held
+    assert "NO_POSITION_FIELD" not in held
+    assert held == {"LONG_YES", "SHORT_NO"}
+
+
+def test_market_listed_twice_in_scan_is_bought_at_most_once():
+    # Duplicate ticker across pagination shouldn't cause a second order.
+    dup = _market("DUP", ask=95, size=99)
+    client = _client_with([dup, dup], balance_cents=500)
+    summary = run_pass(client, live=False, sizing_mode="FIXED_DOLLAR",
+                       fixed_trade_size_usd=1.0, price_band=(95, 99),
+                       min_liquidity=1)
+    assert summary.orders_submitted == 1
+    assert summary.markets_scanned == 2
+    # Both candidates passed the filter; the second was skipped at execution
+    # by the bought_this_pass guard, not by the filter.
+    assert summary.markets_considered == 2
+
+
+def test_pass_with_no_candidates_in_band_halts_cleanly():
+    markets = [_market("CHEAP", ask=10), _market("MID", ask=50)]
+    client = _client_with(markets, balance_cents=500)
+    summary = run_pass(client, live=False, sizing_mode="FIXED_DOLLAR",
+                       fixed_trade_size_usd=1.0, price_band=(95, 99),
+                       min_liquidity=1)
+    assert summary.halted
+    assert summary.halt_reason == "no_candidates"
+    assert summary.orders_submitted == 0

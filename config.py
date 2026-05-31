@@ -200,4 +200,37 @@ def validate() -> list[str]:
         problems.append("Price band must lie inside 1..99 cents.")
     if PRICE_BAND_MIN_CENTS > PRICE_BAND_MAX_CENTS:
         problems.append("PRICE_BAND_MIN_CENTS must be <= PRICE_BAND_MAX_CENTS")
+    if RECHECK_INTERVAL_HOURS <= 0:
+        problems.append("RECHECK_INTERVAL_HOURS must be > 0")
+    if MIN_LIQUIDITY_CONTRACTS < 0:
+        problems.append("MIN_LIQUIDITY_CONTRACTS must be >= 0")
     return problems
+
+
+def warnings() -> list[str]:
+    """Non-fatal advisories surfaced in the boot banner."""
+    out: list[str] = []
+    if SIZING_MODE == "FIXED_DOLLAR":
+        # In FIXED_DOLLAR mode the per-market slice has to cover ask + fee.
+        # At 95¢ the cheapest outlay is 96¢; a smaller slice means the
+        # sizer will refuse every market in the band.
+        min_outlay_dollars = (PRICE_BAND_MIN_CENTS + 1) / 100  # ≈ 0.96
+        if FIXED_TRADE_SIZE_USD < min_outlay_dollars:
+            out.append(
+                f"FIXED_TRADE_SIZE_USD=${FIXED_TRADE_SIZE_USD:.2f} is below the "
+                f"cheapest outlay (${min_outlay_dollars:.2f} at {PRICE_BAND_MIN_CENTS}¢ "
+                f"+ fee). Every market will be skipped — raise the slice or "
+                f"switch to ALL_IN_PER_MARKET."
+            )
+    if ENVIRONMENT == "production" and not LIVE_TRADING:
+        out.append(
+            "ENVIRONMENT=production with LIVE_TRADING=False: orders won't be "
+            "submitted, but you'll be hitting real-money endpoints for reads. "
+            "Set ENVIRONMENT=demo unless you really mean production."
+        )
+    if ENVIRONMENT == "production" and LIVE_TRADING:
+        out.append(
+            "LIVE PRODUCTION TRADING — orders will spend real money. Make sure "
+            "you've watched several demo passes first."
+        )
+    return out

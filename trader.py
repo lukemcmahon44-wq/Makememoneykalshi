@@ -45,6 +45,14 @@ class PassSummary:
 
 
 def _held_tickers(client: KalshiClient) -> set[str]:
+    """Tickers in which we currently have a non-zero net position.
+
+    Kalshi's market_positions entries expose `position` as a SIGNED integer:
+    positive means long Yes, negative means long No, zero means flat (even if
+    `total_traded` is large from a round-trip). We must not use total_traded
+    as a fallback or we'd permanently lock ourselves out of any market we've
+    ever traded.
+    """
     try:
         positions = client.get_positions()
     except KalshiAPIError as exc:
@@ -52,15 +60,20 @@ def _held_tickers(client: KalshiClient) -> set[str]:
         return set()
     held: set[str] = set()
     for p in positions:
-        t = p.get("ticker") or p.get("market_ticker")
-        if not t:
+        ticker = p.get("ticker") or p.get("market_ticker")
+        if not ticker:
             continue
-        size = p.get("position") or p.get("total_traded") or 0
+        raw = p.get("position")
+        if raw is None:
+            continue
         try:
-            if int(size) != 0:
-                held.add(t)
+            if int(raw) != 0:
+                held.add(ticker)
         except (TypeError, ValueError):
-            held.add(t)
+            # If the field is present but unparseable, be conservative and
+            # treat the market as held — better to skip a trade than to
+            # double-buy.
+            held.add(ticker)
     return held
 
 

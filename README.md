@@ -195,20 +195,31 @@ the env var rather than editing `config.py`.
 
 ### Discrepancies vs. the reference values in the spec
 
-- **Demo base URL** — the spec's `https://demo-api.kalshi.co/trade-api/v2`
-  is the one we kept as default, but Kalshi's newer docs sometimes route
-  demo traffic via `https://external-api.demo.kalshi.co/trade-api/v2`.
-  Both have worked at different points; the env override above is the
-  escape hatch.
-- **Production base URL** — historical hosts include
-  `trading-api.kalshi.com` and `api.elections.kalshi.com`. We default to
-  the elections host; if Kalshi flips back to `trading-api`, override via
-  `KALSHI_PROD_BASE_URL`.
-- **Fee formula** — the spec is correct in shape
-  (`ceil(0.07 × contracts × price × (1 − price))`). Kalshi's documented
-  precision is technically centicents (1/10000 dollar) before rounding,
-  but ceiling-to-cent gives the same answer for all 95–99¢ inputs we care
-  about, so we use the simpler cent-ceiling.
+- **Demo base URL** — the spec listed `https://demo-api.kalshi.co/trade-api/v2`
+  and that is the default we kept. Kalshi's current docs (May 2026) also
+  show `https://external-api.demo.kalshi.co/trade-api/v2`; both have been
+  served at various points. If one returns 404/host-unreachable, set
+  `KALSHI_DEMO_BASE_URL` in `.env` to the other — no code change needed.
+- **Production base URL** — the spec listed
+  `https://api.elections.kalshi.com/trade-api/v2` (kept as default) and
+  the older `https://trading-api.kalshi.com/trade-api/v2`. The "elections"
+  hostname is the current canonical one; the trading-api hostname is the
+  legacy alias and still resolves at the time of writing. Override via
+  `KALSHI_PROD_BASE_URL` if that changes.
+- **Authentication** — the spec said "if Kalshi's current auth requires
+  API key ID + RSA signing". It does. The bot signs every request with
+  RSA-PSS / SHA-256 / MGF1 / salt = 32 bytes and sends the three
+  `KALSHI-ACCESS-*` headers. Bearer-token auth is not used.
+- **Fee formula** — the spec's
+  `ceil(0.07 × contracts × price × (1 − price))` is correct in shape.
+  Kalshi's documented precision is technically centicents (1/10000 dollar)
+  before rounding, but ceiling-to-cent gives the same answer for every
+  input in the 95-99¢ band we trade in, so the integer-cent implementation
+  in `strategy/fees.py` uses the simpler cent-ceiling.
+- **No official Python client** — Kalshi does not publish a maintained
+  first-party Python SDK as of May 2026, so we hand-roll the HTTP layer
+  with `httpx`. Several community libraries exist; none were stable
+  enough to take a dependency on.
 
 ---
 

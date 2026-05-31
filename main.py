@@ -64,6 +64,9 @@ def main() -> int:
 
     _banner(logger)
 
+    for w in config.warnings():
+        logger.warning("CONFIG WARN   | %s", w)
+
     try:
         signer = _build_signer()
     except Exception as exc:

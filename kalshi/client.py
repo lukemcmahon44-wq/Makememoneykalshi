@@ -170,13 +170,11 @@ class KalshiClient:
     def iter_markets(self, *, status: str = "open", limit: int = 200) -> Iterator[dict]:
         """Yield every market across paginated responses."""
         cursor: Optional[str] = None
-        seen = 0
         while True:
             page = self.list_markets(status=status, limit=limit, cursor=cursor)
             batch = page.get("markets") or []
             for m in batch:
                 yield m
-            seen += len(batch)
             cursor = page.get("cursor")
             if not cursor or not batch:
                 return
